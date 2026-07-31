@@ -29,7 +29,7 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "").strip()
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
 
 FORCE_RENEW = os.getenv("FORCE_RENEW", "false").lower() == "true"
-DASHBOARD_URL = "https://zampto.net"
+DASHBOARD_URL = "https://dash.zampto.net/auth/login"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("zampto")
@@ -45,10 +45,13 @@ def push_telegram(title: str, body: str):
         log.warning("Telegram Bot not configured, skipping notification")
         return
     
-    # 自動修正使用者可能誤填的 bot 字頭
+    # 徹底防止 Token 拼接錯誤：過濾使用者可能填入的網址、bot字眼及斜線
     token = TG_BOT_TOKEN
+    if "api.telegram.org" in token:
+        token = token.split("/bot")[-1].split("/")
     if token.lower().startswith("bot"):
         token = token[3:]
+    token = token.strip("/")
         
     url = f"https://telegram.org{token}/sendMessage"
     formatted_text = f"*{title}*\n\n{body}"
@@ -70,7 +73,7 @@ def push_telegram(title: str, body: str):
 
 def wait_for(page, selector: str, timeout: float = 30.0, label: str = "element"):
     try:
-        page.wait_for_selector(selector, timeout=timeout * 1000)
+        page.wait_for_selector(selector, timeout=timeout * 1000, state="attached")
         log.info("Found %s: %s", label, selector)
         return True
     except Exception:
@@ -114,7 +117,6 @@ def main():
     log.info("=== Zampto Auto Renewal ===")
     log.info("Server ID: %s  |  Force: %s", SERVER_ID, FORCE_RENEW)
 
-    # 確保截圖與報告目錄存在，防止 FileNotFoundError
     os.makedirs("./screenshots", exist_ok=True)
 
     report = {
@@ -125,56 +127,66 @@ def main():
         "error": None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
     browser = None
     try:
-        # ── 1. Launch CloakBrowser (回歸同步標準調用) ───────────────────────
-        browser = launch(headless=True, geoip=True)
+        # ── 1. Launch CloakBrowser (優化參數，防止網站檢測、確保啟用 JS) ──────────
+        browser = launch(
+            headless=True, 
+            geoip=True,
+            args=["--disable-blink-features=AutomationControlled", "--ignore-certificate-errors"]
+        )
         page = browser.new_page()
+        page.set_viewport_size({"width": 1280, "height": 720})
 
         # ── 2. Navigate to Zampto Dashboard ─────────────────────────────
         log.info("Navigating to %s", DASHBOARD_URL)
-        page.goto(DASHBOARD_URL, wait_until="networkidle")
-        time.sleep(2)
+        page.goto(DASHBOARD_URL, wait_until="load")
+        time.sleep(5)  # 延長等待給 JavaScript 渲染
         screenshot(page, "01_dashboard.png")
 
         # ── 3. Detect login page & handle Logto ─────────────────────────
-        if "login" in page.url.lower():
-            log.info("Login page detected")
+        current_url = page.url.lower()
+        if "login" in current_url or "auth" in current_url:
+            log.info("Login page detected: %s", page.url)
             screenshot(page, "02_login.png")
 
-            # Step 1: Enter email/username
-            if wait_for(page, "input[name='email'], input[type='email'], input[name='username']", 15, "email input"):
-                email_input = page.query_selector("input[name='email'], input[type='email'], input[name='username']")
+            # 萬能匹配輸入框
+            email_selector = "input[name='email'], input[type='email'], input[name='username'], input[placeholder*='Email' i], input[placeholder*='账号' i]"
+            if wait_for(page, email_selector, 20, "email input"):
+                email_input = page.query_selector(email_selector)
+                email_input.click()
                 email_input.fill(USERNAME)
-                email_input.press("Enter")
                 time.sleep(1)
+                
+                pwd_selector = "input[type='password'], input[placeholder*='Password' i], input[placeholder*='密码' i]"
+                if wait_for(page, pwd_selector, 10, "password input"):
+                    pwd_input = page.query_selector(pwd_selector)
+                    pwd_input.click()
+                    pwd_input.fill(PASSWORD)
+                    time.sleep(1)
+                    
+                    login_btn_selector = "button[type='submit'], button:has-text('Login'), button:has-text('登录'), .btn-login"
+                    login_btn = page.query_selector(login_btn_selector)
+                    if login_btn:
+                        login_btn.click()
+                    else:
+                        pwd_input.press("Enter")
+                    
+                    log.info("Login credentials submitted.")
+                    time.sleep(5)
 
-            # Step 2: Enter password
-            if wait_for(page, "input[type='password']", 15, "password input"):
-                pwd_input = page.query_selector("input[type='password']")
-                pwd_input.fill(PASSWORD)
-                pwd_input.press("Enter")
-                time.sleep(3)
-
-            # Check for 2FA / OTP
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:
                 pass
             screenshot(page, "03_post_login.png")
 
-            # ── 4. Navigate to server detail ────────────────────────────
-            server_url = f"{DASHBOARD_URL}/server?id={SERVER_ID}"
-            page.goto(server_url, wait_until="networkidle")
-            time.sleep(2)
-            screenshot(page, "04_server_detail.png")
-        else:
-            # Already logged in, go directly to server
-            server_url = f"{DASHBOARD_URL}/server?id={SERVER_ID}"
-            page.goto(server_url, wait_until="networkidle")
-            time.sleep(2)
-            screenshot(page, "04_server_detail.png")
+        # ── 4. Navigate to server detail ────────────────────────────
+        server_url = f"{DASHBOARD_URL}/server?id={SERVER_ID}"
+        log.info("Redirecting to server detail page: %s", server_url)
+        page.goto(server_url, wait_until="networkidle")
+        time.sleep(3)
+        screenshot(page, "04_server_detail.png")
 
         # ── 5. Determine server status ─────────────────────────────────
         status_text = ""
@@ -231,12 +243,10 @@ def main():
                     renew_btn.click()
                     time.sleep(2)
 
-                    # Wait for Cloudflare Turnstile
                     log.info("Waiting for Cloudflare Turnstile...")
                     wait_for(page, "[data-sitekey], .cf-turnstile", 30, "turnstile")
                     time.sleep(8)
 
-                    # Confirm renewal if dialog appears
                     confirm = page.query_selector("button:has-text('Confirm'), button:has-text('OK'), button:has-text('确定')")
                     if confirm:
                         confirm.click()
@@ -248,7 +258,6 @@ def main():
                         pass
                     screenshot(page, "06_after_renew.png")
 
-                    # Re-read expiry
                     expiry_el2 = page.query_selector("text=/Expiry|到期/i")
                     if expiry_el2:
                         new_expiry = expiry_el2.inner_text()
@@ -285,24 +294,22 @@ def main():
     }.get(report["action"], "❓")
 
     body_lines = [
-        f"🖥️ Zampto Server Report",
+        f"🖥️ **Zampto Server Report**",
         f"",
-        f"Server ID: {SERVER_ID}",
-        f"Status: {status_icon} {report['status'].title()}",
-        f"Action: {action_icon} {report['action']}",
+        f"**Server ID:** `{SERVER_ID}`",
+        f"**Status:** {status_icon} {report['status'].title()}",
+        f"**Action:** {action_icon} {report['action']}",
     ]
-
     if report.get("expiry"):
-        body_lines.append(f"Expiry: {report['expiry']}")
+        body_lines.append(f"**Expiry:** {report['expiry']}")
     if report.get("error"):
-        body_lines.append(f"⚠️ Error: {report['error']}")
-
+        body_lines.append(f"**⚠️ Error:** {report['error']}")
     body_lines.append(f"")
-    body_lines.append(f"Generated: {report['timestamp']}")
+    body_lines.append(f"_Generated: {report['timestamp']}_")
 
     body = "\n".join(body_lines)
     log.info("--- Report ---\n%s", body)
-
+    
     push_telegram("🖥️ Zampto Server Report", body)
 
     with open("./screenshots/report.json", "w") as f:
