@@ -29,7 +29,7 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "").strip()
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
 
 FORCE_RENEW = os.getenv("FORCE_RENEW", "false").lower() == "true"
-DASHBOARD_URL = "https://dash.zampto.net/auth/login"
+DASHBOARD_URL = "https://dash.zampto.net"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("zampto")
