@@ -163,17 +163,28 @@ def main():
                     pwd_input = page.query_selector(pwd_selector)
                     pwd_input.click()
                     pwd_input.fill(PASSWORD)
-                    time.sleep(1)
+                    time.sleep(2)
                     
+                    # 💡 【核心新增】檢測並等待登入介面的 Cloudflare 驗證碼
+                    # 讓 CloakBrowser 有足夠的時間去自動點擊並破解 CF 盾
+                    cf_selector = "[data-sitekey], .cf-turnstile, iframe[src*='challenges']"
+                    if page.query_selector(cf_selector):
+                        log.info("Detection: Login page has Cloudflare Turnstile. Waiting for auto-solve...")
+                        time.sleep(12)  # 給予 12 秒寬裕時間讓瀏覽器內置算法自動過盾
+                        screenshot(page, "02_login_after_cf_solved.png")
+                    
+                    # 尋找登入按鈕並點擊
                     login_btn_selector = "button[type='submit'], button:has-text('Login'), button:has-text('登录'), .btn-login"
                     login_btn = page.query_selector(login_btn_selector)
                     if login_btn:
+                        log.info("Clicking login button...")
                         login_btn.click()
                     else:
+                        log.info("Pressing Enter to login...")
                         pwd_input.press("Enter")
                     
                     log.info("Login credentials submitted.")
-                    time.sleep(5)
+                    time.sleep(8)  # 登入跳轉需要較長時間，延長等待
 
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
@@ -185,7 +196,7 @@ def main():
         server_url = f"{DASHBOARD_URL}/server?id={SERVER_ID}"
         log.info("Redirecting to server detail page: %s", server_url)
         page.goto(server_url, wait_until="networkidle")
-        time.sleep(3)
+        time.sleep(5)  # 延長頁面載入等待
         screenshot(page, "04_server_detail.png")
 
         # ── 5. Determine server status ─────────────────────────────────
