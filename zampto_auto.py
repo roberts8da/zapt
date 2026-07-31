@@ -4,7 +4,7 @@ Zampto Auto Renewal — CloakBrowser-based automation.
 
 Logs in via Logto, checks server status, starts if stopped,
 clicks renewal, waits for Cloudflare Turnstile, then pushes
-results via WxPusher.
+results via Telegram Bot.
 """
 
 import os
@@ -23,34 +23,44 @@ from cloakbrowser import CloakBrowser
 USERNAME = os.getenv("ZAMPTO_USERNAME", "")
 PASSWORD = os.getenv("ZAMPTO_PASSWORD", "")
 SERVER_ID = os.getenv("ZAMPTO_SERVER_ID", "")
-WXPUSHER_TOKEN = os.getenv("WXPUSHER_TOKEN", "")
-WXPUSHER_UID = os.getenv("WXPUSHER_UID", "")
+
+# 已更換為 TG 相關環境變數
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
+
 FORCE_RENEW = os.getenv("FORCE_RENEW", "false").lower() == "true"
-DASHBOARD_URL = "https://dash.zampto.net"
+DASHBOARD_URL = "https://zampto.net"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("zampto")
 
 
-# ── WxPusher ────────────────────────────────────────────────────────────
+# ── Telegram Notification ───────────────────────────────────────────────
 
-def push_wxpusher(title: str, body: str):
-    if not WXPUSHER_TOKEN or not WXPUSHER_UID:
-        log.warning("WxPusher not configured, skipping notification")
+def push_telegram(title: str, body: str):
+    """
+    將原來的 WxPusher 改為 Telegram 機器人推送
+    """
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        log.warning("Telegram Bot not configured, skipping notification")
         return
+    
+    url = f"https://telegram.org{TG_BOT_TOKEN}/sendMessage"
+    
+    # 組合標題與內文，使用 Markdown 格式美化
+    formatted_text = f"*{title}*\n\n{body}"
+    
     payload = {
-        "appToken": WXPUSHER_TOKEN,
-        "uids": [WXPUSHER_UID],
-        "title": title,
-        "content": body,
-        "contentType": 2,  # markdown
+        "chat_id": TG_CHAT_ID,
+        "text": formatted_text,
+        "parse_mode": "Markdown",
     }
     try:
-        r = requests.post("https://wxpusher.zjiecode.com/api/send/message", json=payload, timeout=15)
+        r = requests.post(url, json=payload, timeout=15)
         r.raise_for_status()
-        log.info("WxPusher sent successfully")
+        log.info("Telegram notification sent successfully")
     except Exception as e:
-        log.error("WxPusher failed: %s", e)
+        log.error("Telegram notification failed: %s", e)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -264,22 +274,26 @@ def main():
     }.get(report["action"], "❓")
 
     body_lines = [
-        f"🖥️ **Zampto Server Report**",
+        f"🖥️ Zampto Server Report",
         f"",
-        f"**Server ID:** `{SERVER_ID}`",
-        f"**Status:** {status_icon} {report['status'].title()}",
-        f"**Action:** {action_icon} {report['action']}",
+        f"Server ID: {SERVER_ID}",
+        f"Status: {status_icon} {report['status'].title()}",
+        f"Action: {action_icon} {report['action']}",
     ]
+
     if report.get("expiry"):
-        body_lines.append(f"**Expiry:** {report['expiry']}")
+        body_lines.append(f"Expiry: {report['expiry']}")
     if report.get("error"):
-        body_lines.append(f"**⚠️ Error:** {report['error']}")
+        body_lines.append(f"⚠️ Error: {report['error']}")
+
     body_lines.append(f"")
-    body_lines.append(f"_Generated: {report['timestamp']}_")
+    body_lines.append(f"Generated: {report['timestamp']}")
 
     body = "\n".join(body_lines)
     log.info("--- Report ---\n%s", body)
-    push_wxpusher("🖥️ Zampto Server Report", body)
+
+    # 這裡已成功呼叫 Telegram 推送函數
+    push_telegram("🖥️ Zampto Server Report", body)
 
     # Write report to JSON for potential downstream use
     with open("./screenshots/report.json", "w") as f:
