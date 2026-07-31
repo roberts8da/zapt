@@ -87,8 +87,6 @@ def screenshot(page, name: str, path: str = "./screenshots"):
     page.screenshot(path=filepath)
     log.info("Screenshot saved: %s", filepath)
     return filepath
-
-
 def parse_expiry(text: str):
     """Extract remaining time from a string like '1 day 23h 53m'."""
     text = text.strip()
@@ -127,6 +125,7 @@ def main():
         "error": None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
     browser = None
     try:
         # ── 1. Launch CloakBrowser (優化參數，防止網站檢測、確保啟用 JS) ──────────
@@ -141,7 +140,7 @@ def main():
         # ── 2. Navigate to Zampto Dashboard ─────────────────────────────
         log.info("Navigating to %s", DASHBOARD_URL)
         page.goto(DASHBOARD_URL, wait_until="load")
-        time.sleep(5)  # 延長等待給 JavaScript 渲染
+        time.sleep(5)
         screenshot(page, "01_dashboard.png")
 
         # ── 3. Detect login page & handle Logto ─────────────────────────
@@ -165,13 +164,41 @@ def main():
                     pwd_input.fill(PASSWORD)
                     time.sleep(2)
                     
-                    # 💡 【核心新增】檢測並等待登入介面的 Cloudflare 驗證碼
-                    # 讓 CloakBrowser 有足夠的時間去自動點擊並破解 CF 盾
-                    cf_selector = "[data-sitekey], .cf-turnstile, iframe[src*='challenges']"
-                    if page.query_selector(cf_selector):
-                        log.info("Detection: Login page has Cloudflare Turnstile. Waiting for auto-solve...")
-                        time.sleep(12)  # 給予 12 秒寬裕時間讓瀏覽器內置算法自動過盾
-                        screenshot(page, "02_login_after_cf_solved.png")
+                    # 🛡️ 【核心過盾】進階處理登入頁面的 CF 盾
+                    try:
+                        cf_iframe_element = page.query_selector('iframe[src*="://cloudflare.com"]')
+                        if cf_iframe_element:
+                            log.info("🛡️ Found Cloudflare Turnstile iframe. Attempting bypass...")
+                            time.sleep(2)
+                            
+                            cf_frame = cf_iframe_element.content_frame()
+                            if cf_frame:
+                                checkbox = cf_frame.query_selector('input[type=\"checkbox\"], .mark, #challenge-stage')
+                                if checkbox:
+                                    checkbox.click(position={"x": 25, "y": 25}, timeout=5000)
+                                    log.info("👉 Simulating human click at checkbox (offset 25, 25)")
+                                else:
+                                    cf_iframe_element.click(position={"x": 40, "y": 40})
+                                    log.info("👉 Simulating human click at iframe bounding box center")
+                                
+                                log.info("⏳ Waiting for Turnstile Response token to generate...")
+                                cf_passed = False
+                                for _ in range(20):
+                                    time.sleep(1)
+                                    token_input = page.query_selector('input[name=\"cf-turnstile-response\"]')
+                                    if token_input:
+                                        token_value = token_input.evaluate('el => el.value')
+                                        if token_value and len(token_value) > 10:
+                                            log.info("✅ CF Turnstile verified successfully via token check!")
+                                            cf_passed = True
+                                            break
+                                if not cf_passed:
+                                    log.warning("⚠️ Turnstile token not found yet, proceeding anyway...")
+                        else:
+                            log.info("No CF Turnstile iframe visible on login page. Skipping...")
+                    except Exception as cf_err:
+                        log.error("Error during CF Turnstile solver: %s", cf_err)
+                    screenshot(page, "02_login_after_cf_solved.png")
                     
                     # 尋找登入按鈕並點擊
                     login_btn_selector = "button[type='submit'], button:has-text('Login'), button:has-text('登录'), .btn-login"
@@ -184,7 +211,7 @@ def main():
                         pwd_input.press("Enter")
                     
                     log.info("Login credentials submitted.")
-                    time.sleep(8)  # 登入跳轉需要較長時間，延長等待
+                    time.sleep(8)  # 延長等待登入跳轉
 
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
@@ -196,7 +223,7 @@ def main():
         server_url = f"{DASHBOARD_URL}/server?id={SERVER_ID}"
         log.info("Redirecting to server detail page: %s", server_url)
         page.goto(server_url, wait_until="networkidle")
-        time.sleep(5)  # 延長頁面載入等待
+        time.sleep(5)
         screenshot(page, "04_server_detail.png")
 
         # ── 5. Determine server status ─────────────────────────────────
