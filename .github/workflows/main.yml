@@ -2,7 +2,7 @@ name: Zampto Auto Renewal
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 每天 UTC 00:00 (北京时间 08:00)
+    - cron: '0 0 * * *'  # 每 24 小時（每天）UTC 00:00 (北京時間 08:00) 執行一次
   workflow_dispatch:
     inputs:
       force_renew:
@@ -51,16 +51,15 @@ jobs:
           pip install -r requirements.txt
           python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 
-      - name: Start Hysteria2 proxy
+      - name: 🌐 设置sing-box代理转发（取代原hy2）
+        continue-on-error: true
         env:
-          HY2_CONFIG: ${{ secrets.HY2_CONFIG }}
+          NODE_LINK: ${{ secrets.NODE_LINK }} # 请在 GitHub Repository Secrets 中设置你的 NODE_LINK 代理链接
         run: |
-          curl -sL https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -o hysteria
-          chmod +x hysteria
-          echo "$HY2_CONFIG" > config.yaml
-          ./hysteria client -c config.yaml &
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
           sleep 5
           echo "Direct IP: $(curl -s --max-time 5 ifconfig.me || echo 'fail')"
+          # 提示：sing-box 脚本默认转发的本地 socks5 端口通常是 1080 或者是全局透明代理，你可以保留原测试
           echo "Proxy IP: $(curl -s --max-time 10 --socks5 127.0.0.1:1080 ifconfig.me || echo 'proxy fail')"
 
       - name: Run renewal
@@ -68,8 +67,8 @@ jobs:
           ZAMPTO_USERNAME: ${{ secrets.ZAMPTO_USERNAME }}
           ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASSWORD }}
           ZAMPTO_SERVER_ID: ${{ secrets.ZAMPTO_SERVER_ID }}
-          WXPUSHER_TOKEN: ${{ secrets.WXPUSHER_TOKEN }}
-          WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
           ENABLE_RECORDING: ${{ github.event.inputs.enable_recording || 'false' }}
         run: |
