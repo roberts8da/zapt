@@ -1,108 +1,75 @@
-name: Zampto Auto Renewal
+name: Zampto 续期
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 每 24 小時（每天）UTC 00:00 (北京時間 08:00) 執行一次
+    - cron: '30 3 * * *'  # 每天北京时间 11:30 运行
   workflow_dispatch:
-    inputs:
-      force_renew:
-        description: 'Force renewal regardless of expiry'
-        required: false
-        default: 'false'
-        type: choice
-        options: ['false', 'true']
-      enable_recording:
-        description: 'Enable screen recording'
-        required: false
-        default: 'false'
-        type: choice
-        options: ['false', 'true']
 
 jobs:
-  zampto-auto:
-    name: Check & Auto-Renew
+  renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      DISPLAY: ":99"
-      LIBGL_ALWAYS_SOFTWARE: "1"
-      GALLIUM_DRIVER: "llvmpipe"
+    permissions:
+      contents: read
+      actions: write
+    concurrency:
+      group: Zampto_Renew       # 同一时间只允许一个运行
+      cancel-in-progress: false
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码仓库
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/zampto
+          token: ${{ secrets.REPO_TOKEN }}
 
-      - name: Setup Python 3.12
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
-      - name: Install system deps
+      - name: 安装依赖
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            xvfb ffmpeg curl unzip \
-            fonts-noto-cjk \
-            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
-            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
-            libxfixes3 libxrandr2 libgbm1 libasound2t64
+          sudo apt-get update && sudo apt-get install -y xvfb unzip
+          pip install seleniumbase>=4.25.0 pyvirtualdisplay>=3.0 requests>=2.31.0 nest_asyncio
 
-      - name: Install Python deps
-        run: |
-          pip install -r requirements.txt
-          pip install playwright
-          playwright install chromium --with-deps
-          python -c "from cloakbrowser import ensure_binary; ensure_binary()"
-
-      - name: 🌐 设置sing-box代理转发（取代原hy2）
-        continue-on-error: true
+      - name: 设置代理
         env:
-          NODE_LINK: ${{ secrets.NODE_LINK }} # 请在 GitHub Repository Secrets 中设置你的 NODE_LINK 代理链接
-        run: |
-          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
-          sleep 5
-          echo "Direct IP: $(curl -s --max-time 5 ifconfig.me || echo 'fail')"
-          # 提示：sing-box 脚本默认转发 the 本地 socks5 端口通常是 1080 或者是全局透明代理，你可以保留原测试
-          echo "Proxy IP: $(curl -s --max-time 10 --socks5 127.0.0.1:1080 ifconfig.me || echo 'proxy fail')"
-
-      - name: Run renewal
-        env:
-          ZAMPTO_USERNAME: ${{ secrets.ZAMPTO_USERNAME }}
-          ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASSWORD }}
-          ZAMPTO_SERVER_ID: ${{ secrets.ZAMPTO_SERVER_ID }}
+          NODE_LINK: ${{ secrets.NODE_LINK_ZAMPTO }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
-          ENABLE_RECORDING: ${{ github.event.inputs.enable_recording || 'false' }}
         run: |
-          Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
-          XVFB_PID=$!
-          sleep 2
-
-          RECORD_PID=""
-          if [ "$ENABLE_RECORDING" = "true" ]; then
-            echo "Recording enabled"
-            ffmpeg -f x11grab -video_size 1280x720 -framerate 10 -i :99 \
-              -codec:v libx264 -preset ultrafast -crf 30 \
-              -pix_fmt yuv420p -movflags +faststart /tmp/recording.mp4 \
-              > /tmp/ffmpeg.log 2>&1 &
-            RECORD_PID=$!
-            sleep 2
+          chmod +x scripts/setup_proxy.sh
+          if ! bash scripts/setup_proxy.sh; then
+            echo "❌ 代理设置失败，发送通知..."
+            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TG_CHAT_ID}" \
+              -d parse_mode="HTML" \
+              -d text="❌ <b>VPS8 签到失败</b>%0A%0A原因: 代理不可用%0A仓库: ${{ github.repository }}%0A查看: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --max-time 10 || true
+            exit 1
           fi
 
-          python zampto_auto.py || echo "Script exited: $?"
+      - name: 执行续期
+        env:
+          ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_ACCOUNT }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          PROXY_SERVER: ${{ env.PROXY_SERVER }}    # 由 setup_proxy.sh 写入格式:socks5://127.0.0.1:1080
+        run: python scripts/Zampto/Zampto_Renew.py
 
-          sleep 2
-          [ -n "$RECORD_PID" ] && kill $RECORD_PID 2>/dev/null
-          [ -n "$RECORD_PID" ] && wait $RECORD_PID 2>/dev/null
-          kill $XVFB_PID 2>/dev/null
+#      - name: 上传截图
+#        uses: actions/upload-artifact@v4
+#        if: always()
+#        with:
+#          name: screenshots-${{ github.run_number }}
+#          path: output/screenshots/
+#          retention-days: 3
 
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: 清理旧运行
+        uses: Mattraks/delete-workflow-runs@v2
         with:
-          name: debug-${{ github.run_number }}
-          path: |
-            ./screenshots/*.png
-            ${{ github.event.inputs.enable_recording == 'true' && '/tmp/recording.mp4' || '' }}
-          if-no-files-found: ignore
-          retention-days: 3
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          delete_workflow_pattern: ${{ github.workflow }}
+          retain_days: 0
+          keep_minimum_runs: 1
