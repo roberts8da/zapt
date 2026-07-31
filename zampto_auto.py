@@ -13,10 +13,12 @@ import sys
 import json
 import time
 import logging
+import asyncio
 from datetime import datetime, timezone
 
 import requests
-from cloakbrowser import CloakBrowser
+# 這裡修改了導入方式：使用最新官方標準的 launch 函數
+from cloakbrowser import launch
 
 # ── Config ──────────────────────────────────────────────────────────────
 
@@ -65,9 +67,9 @@ def push_telegram(title: str, body: str):
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
-def wait_for(page, selector: str, timeout: float = 30.0, label: str = "element"):
+async def wait_for(page, selector: str, timeout: float = 30.0, label: str = "element"):
     try:
-        page.wait_for_selector(selector, timeout=timeout * 1000)
+        await page.wait_for_selector(selector, timeout=timeout * 1000)
         log.info("Found %s: %s", label, selector)
         return True
     except Exception:
@@ -75,10 +77,10 @@ def wait_for(page, selector: str, timeout: float = 30.0, label: str = "element")
         return False
 
 
-def screenshot(page, name: str, path: str = "./screenshots"):
+async def screenshot(page, name: str, path: str = "./screenshots"):
     os.makedirs(path, exist_ok=True)
     filepath = os.path.join(path, name)
-    page.screenshot(path=filepath)
+    await page.screenshot(path=filepath)
     log.info("Screenshot saved: %s", filepath)
     return filepath
 
@@ -103,7 +105,7 @@ def parse_expiry(text: str):
 
 # ── Main automation ─────────────────────────────────────────────────────
 
-def main():
+async def run_automation():
     if not all([USERNAME, PASSWORD, SERVER_ID]):
         log.error("Missing required env vars: ZAMPTO_USERNAME, ZAMPTO_PASSWORD, ZAMPTO_SERVER_ID")
         sys.exit(1)
@@ -122,64 +124,65 @@ def main():
 
     browser = None
     try:
-        # ── 1. Launch CloakBrowser ──────────────────────────────────────
-        browser = CloakBrowser(headless=True, geoip=True)
-        page = browser.get_page()
+        # ── 1. Launch CloakBrowser (使用最新非同步官方調用規範) ─────────────────
+        browser = await launch(headless=True, geoip=True)
+        page = await browser.new_page()
 
         # ── 2. Navigate to Zampto Dashboard ─────────────────────────────
         log.info("Navigating to %s", DASHBOARD_URL)
-        page.goto(DASHBOARD_URL, wait_until="networkidle")
-        time.sleep(2)
-        screenshot(page, "01_dashboard.png")
+        await page.goto(DASHBOARD_URL, wait_until="networkidle")
+        await asyncio.sleep(2)
+        await screenshot(page, "01_dashboard.png")
 
         # ── 3. Detect login page & handle Logto ─────────────────────────
         if "login" in page.url.lower():
             log.info("Login page detected")
-            screenshot(page, "02_login.png")
+            await screenshot(page, "02_login.png")
 
             # Step 1: Enter email/username
-            if wait_for(page, "input[name='email'], input[type='email'], input[name='username']", 15, "email input"):
-                email_input = page.query_selector("input[name='email'], input[type='email'], input[name='username']")
-                email_input.fill(USERNAME)
-                email_input.press("Enter")
-                time.sleep(1)
+            if await wait_for(page, "input[name='email'], input[type='email'], input[name='username']", 15, "email input"):
+                email_input = await page.query_selector("input[name='email'], input[type='email'], input[name='username']")
+                await email_input.fill(USERNAME)
+                await email_input.press("Enter")
+                await asyncio.sleep(1)
 
             # Step 2: Enter password
-            if wait_for(page, "input[type='password']", 15, "password input"):
-                pwd_input = page.query_selector("input[type='password']")
-                pwd_input.fill(PASSWORD)
-                pwd_input.press("Enter")
-                time.sleep(3)
+            if await wait_for(page, "input[type='password']", 15, "password input"):
+                pwd_input = await page.query_selector("input[type='password']")
+                await pwd_input.fill(PASSWORD)
+                await pwd_input.press("Enter")
+                await asyncio.sleep(3)
 
             # Check for 2FA / OTP
-            page.wait_for_load_state("networkidle", timeout=15000)
-            screenshot(page, "03_post_login.png")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            await screenshot(page, "03_post_login.png")
 
             # ── 4. Navigate to server detail ────────────────────────────
             server_url = f"{DASHBOARD_URL}/server?id={SERVER_ID}"
-            page.goto(server_url, wait_until="networkidle")
-            time.sleep(2)
-            screenshot(page, "04_server_detail.png")
+            await page.goto(server_url, wait_until="networkidle")
+            await asyncio.sleep(2)
+            await screenshot(page, "04_server_detail.png")
         else:
             # Already logged in, go directly to server
             server_url = f"{DASHBOARD_URL}/server?id={SERVER_ID}"
-            page.goto(server_url, wait_until="networkidle")
-            time.sleep(2)
-            screenshot(page, "04_server_detail.png")
-
-        page_content = page.content()
+            await page.goto(server_url, wait_until="networkidle")
+            await asyncio.sleep(2)
+            await screenshot(page, "04_server_detail.png")
 
         # ── 5. Determine server status ─────────────────────────────────
         status_text = ""
         for cls in ["status-running", "status-stopped", "status-starting", "status-stopping"]:
-            el = page.query_selector(f".{cls}")
+            el = await page.query_selector(f".{cls}")
             if el:
-                status_text = el.inner_text()
+                status_text = await el.inner_text()
                 break
         if not status_text:
-            el = page.query_selector("text=/Running|Stopped|Starting|Stopping/i")
+            el = await page.query_selector("text=/Running|Stopped|Starting|Stopping/i")
             if el:
-                status_text = el.inner_text()
+                status_text = await el.inner_text()
 
         is_running = "running" in status_text.lower() if status_text else False
         report["status"] = "running" if is_running else "stopped"
@@ -188,21 +191,24 @@ def main():
         # ── 6. Start server if stopped ──────────────────────────────────
         if not is_running:
             log.info("Server is stopped — clicking Start")
-            start_btn = page.query_selector("button:has-text('Start'), button:has-text('start'), .btn-start")
+            start_btn = await page.query_selector("button:has-text('Start'), button:has-text('start'), .btn-start")
             if start_btn:
-                start_btn.click()
-                time.sleep(3)
-                page.wait_for_load_state("networkidle", timeout=20000)
-                screenshot(page, "05_server_started.png")
+                await start_btn.click()
+                await asyncio.sleep(3)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+                await screenshot(page, "05_server_started.png")
                 report["action"] = "started"
                 log.info("Server start clicked")
             else:
                 log.warning("Start button not found")
 
         # ── 7. Check expiry & handle renewal ────────────────────────────
-        expiry_el = page.query_selector("text=/Expiry|Renew|到期|剩余/i")
+        expiry_el = await page.query_selector("text=/Expiry|Renew|到期|剩余/i")
         if expiry_el:
-            expiry_text = expiry_el.inner_text()
+            expiry_text = await expiry_el.inner_text()
             report["expiry"] = expiry_text
             log.info("Expiry info: %s", expiry_text)
 
@@ -213,33 +219,35 @@ def main():
                 log.info("Initiating renewal (days=%d, hours=%d, force=%s)", days, hours, FORCE_RENEW)
                 report["action"] = "renewed"
 
-                renew_btn = page.query_selector(
+                renew_btn = await page.query_selector(
                     "button:has-text('Renew'), button:has-text('Renewal'), "
                     "button:has-text('续期'), .renew-btn, .btn-renew"
                 )
                 if renew_btn:
-                    renew_btn.click()
-                    time.sleep(2)
+                    await renew_btn.click()
+                    await asyncio.sleep(2)
 
                     # Wait for Cloudflare Turnstile
                     log.info("Waiting for Cloudflare Turnstile...")
-                    wait_for(page, "[data-sitekey], .cf-turnstile", 30, "turnstile")
-                    # Turnstile with CloakBrowser auto-solves; wait for callback
-                    time.sleep(8)
+                    await wait_for(page, "[data-sitekey], .cf-turnstile", 30, "turnstile")
+                    await asyncio.sleep(8)
 
                     # Confirm renewal if dialog appears
-                    confirm = page.query_selector("button:has-text('Confirm'), button:has-text('OK'), button:has-text('确定')")
+                    confirm = await page.query_selector("button:has-text('Confirm'), button:has-text('OK'), button:has-text('确定')")
                     if confirm:
-                        confirm.click()
-                        time.sleep(3)
+                        await confirm.click()
+                        await asyncio.sleep(3)
 
-                    page.wait_for_load_state("networkidle", timeout=20000)
-                    screenshot(page, "06_after_renew.png")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=20000)
+                    except Exception:
+                        pass
+                    await screenshot(page, "06_after_renew.png")
 
                     # Re-read expiry
-                    expiry_el2 = page.query_selector("text=/Expiry|到期/i")
+                    expiry_el2 = await page.query_selector("text=/Expiry|到期/i")
                     if expiry_el2:
-                        new_expiry = expiry_el2.inner_text()
+                        new_expiry = await expiry_el2.inner_text()
                         log.info("New expiry: %s", new_expiry)
                         report["expiry"] = new_expiry
                 else:
@@ -253,15 +261,14 @@ def main():
             log.warning("Expiry element not found")
             report["error"] = "Expiry element not found"
 
-        # Final screenshot
-        screenshot(page, "07_final.png")
+        await screenshot(page, "07_final.png")
 
     except Exception as e:
         report["error"] = str(e)
         log.exception("Automation failed: %s", e)
     finally:
         if browser:
-            browser.close()
+            await browser.close()
 
     # ── 8. Build & send notification ────────────────────────────────────
     status_icon = "🟢" if report["status"] == "running" else "🔴"
@@ -292,14 +299,12 @@ def main():
     body = "\n".join(body_lines)
     log.info("--- Report ---\n%s", body)
 
-    # 這裡已成功呼叫 Telegram 推送函數
     push_telegram("🖥️ Zampto Server Report", body)
 
-    # Write report to JSON for potential downstream use
     with open("./screenshots/report.json", "w") as f:
         json.dump(report, f, indent=2)
     log.info("Report saved to ./screenshots/report.json")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(run_automation())
