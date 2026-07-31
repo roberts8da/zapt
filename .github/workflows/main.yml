@@ -49,6 +49,8 @@ jobs:
       - name: Install Python deps
         run: |
           pip install -r requirements.txt
+          pip install playwright
+          playwright install chromium --with-deps
           python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 
       - name: 🌐 设置sing-box代理转发（取代原hy2）
@@ -59,7 +61,7 @@ jobs:
           bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
           sleep 5
           echo "Direct IP: $(curl -s --max-time 5 ifconfig.me || echo 'fail')"
-          # 提示：sing-box 脚本默认转发的本地 socks5 端口通常是 1080 或者是全局透明代理，你可以保留原测试
+          # 提示：sing-box 脚本默认转发 the 本地 socks5 端口通常是 1080 或者是全局透明代理，你可以保留原测试
           echo "Proxy IP: $(curl -s --max-time 10 --socks5 127.0.0.1:1080 ifconfig.me || echo 'proxy fail')"
 
       - name: Run renewal
