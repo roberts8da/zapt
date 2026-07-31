@@ -1,0 +1,107 @@
+name: Zampto Auto Renewal
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天 UTC 00:00 (北京时间 08:00)
+  workflow_dispatch:
+    inputs:
+      force_renew:
+        description: 'Force renewal regardless of expiry'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      enable_recording:
+        description: 'Enable screen recording'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+jobs:
+  zampto-auto:
+    name: Check & Auto-Renew
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DISPLAY: ":99"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GALLIUM_DRIVER: "llvmpipe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            xvfb ffmpeg curl unzip \
+            fonts-noto-cjk \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+            libxfixes3 libxrandr2 libgbm1 libasound2t64
+
+      - name: Install Python deps
+        run: |
+          pip install -r requirements.txt
+          python -c "from cloakbrowser import ensure_binary; ensure_binary()"
+
+      - name: Start Hysteria2 proxy
+        env:
+          HY2_CONFIG: ${{ secrets.HY2_CONFIG }}
+        run: |
+          curl -sL https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -o hysteria
+          chmod +x hysteria
+          echo "$HY2_CONFIG" > config.yaml
+          ./hysteria client -c config.yaml &
+          sleep 5
+          echo "Direct IP: $(curl -s --max-time 5 ifconfig.me || echo 'fail')"
+          echo "Proxy IP: $(curl -s --max-time 10 --socks5 127.0.0.1:1080 ifconfig.me || echo 'proxy fail')"
+
+      - name: Run renewal
+        env:
+          ZAMPTO_USERNAME: ${{ secrets.ZAMPTO_USERNAME }}
+          ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASSWORD }}
+          ZAMPTO_SERVER_ID: ${{ secrets.ZAMPTO_SERVER_ID }}
+          WXPUSHER_TOKEN: ${{ secrets.WXPUSHER_TOKEN }}
+          WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
+          FORCE_RENEW: ${{ github.event.inputs.force_renew || 'false' }}
+          ENABLE_RECORDING: ${{ github.event.inputs.enable_recording || 'false' }}
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
+          XVFB_PID=$!
+          sleep 2
+
+          RECORD_PID=""
+          if [ "$ENABLE_RECORDING" = "true" ]; then
+            echo "Recording enabled"
+            ffmpeg -f x11grab -video_size 1280x720 -framerate 10 -i :99 \
+              -codec:v libx264 -preset ultrafast -crf 30 \
+              -pix_fmt yuv420p -movflags +faststart /tmp/recording.mp4 \
+              > /tmp/ffmpeg.log 2>&1 &
+            RECORD_PID=$!
+            sleep 2
+          fi
+
+          python zampto_auto.py || echo "Script exited: $?"
+
+          sleep 2
+          [ -n "$RECORD_PID" ] && kill $RECORD_PID 2>/dev/null
+          [ -n "$RECORD_PID" ] && wait $RECORD_PID 2>/dev/null
+          kill $XVFB_PID 2>/dev/null
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_number }}
+          path: |
+            ./screenshots/*.png
+            ${{ github.event.inputs.enable_recording == 'true' && '/tmp/recording.mp4' || '' }}
+          if-no-files-found: ignore
+          retention-days: 3
